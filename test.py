@@ -7,28 +7,32 @@ from sqlalchemy import (
     # Table,
     text,
     Boolean,
+    PrimaryKeyConstraint,
 )
 from sqlalchemy.orm import (
     relationship,
     DeclarativeBase,
     Mapped,
     mapped_column,
-    sessionmaker,Session
+    sessionmaker,
+    Session,
 )
 from datetime import datetime, UTC
 from uuid import UUID, uuid4
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from typing import override
-from fastapi import HTTPException, FastAPI, Depends
 from pydantic import BaseModel, ConfigDict
+from fastapi import FastAPI, Depends, HTTPException
 
-# if __name__ == "__main__":
-engine = create_engine("sqlite:///test.db")
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-# print("SQLAlchemy models defined successfully. Base.metadata contains the schema.")
+DATABASE_URL = "sqlite:///./test.db"
+
+engine = create_engine(
+    DATABASE_URL, echo=True, connect_args={"check_same_thread": False}
+)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
-class Base(BaseModel):
+class Base(DeclarativeBase):
     pass
 
 
@@ -82,20 +86,6 @@ class User(Base):
     @override
     def __repr__(self):
         return f"<User('username={self.username}', 'id={self.id}')>"
-
-# class UserCreate(Base):
-#     username: Mapped[str] = mapped_column(String(50), unique=True)
-#     password: Mapped[str] = mapped_column(String(50))
-#     is_disabled: Mapped[bool] = mapped_column(Boolean, default=False)
-#     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now(UTC))
-#     updated_at: Mapped[datetime] = mapped_column(
-#         DateTime,
-#         default=datetime.now(UTC),
-#         onupdate=datetime.now(UTC),
-#         server_default=text("CURRENT_TIMESTAMP"),
-#     )
-#     # model_configg: ConfigDict = {"from_attributes": True}  # if using Pydantic v2
-#     model_config: ConfigDict = ConfigDict(from_attributes=True)
 
 
 class Role(Base):
@@ -159,14 +149,19 @@ class Unit(Base):
 
 class UserHasRole(Base):
     __tablename__: str = "user_has_role"
+    __table_args__ = (PrimaryKeyConstraint("user_id", "role_id"),)
     # relation with user
     user_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("user.id"), ondelete="CASCADE"
+        PG_UUID(as_uuid=True),
+        ForeignKey("user.id"),
+        # , ondelete="CASCADE"
     )
     user: Mapped["User"] = relationship("User", backref="roles")
     # relation with role
     role_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("role.id"), ondelete="CASCADE"
+        PG_UUID(as_uuid=True),
+        ForeignKey("role.id"),
+        # , ondelete="CASCADE"
     )
     role: Mapped["Role"] = relationship("Role", backref="users")
 
@@ -177,14 +172,19 @@ class UserHasRole(Base):
 
 class UserHasUnit(Base):
     __tablename__: str = "user_has_unit"
+    __table_args__ = (PrimaryKeyConstraint("user_id", "unit_id"),)
     # relation with user
     user_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("user.id"), ondelete="CASCADE"
+        PG_UUID(as_uuid=True),
+        ForeignKey("user.id"),
+        # , ondelete="CASCADE"
     )
     user: Mapped["User"] = relationship("User", backref="units")
     # relation with unit
     unit_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("unit.id"), ondelete="CASCADE"
+        PG_UUID(as_uuid=True),
+        ForeignKey("unit.id"),
+        # , ondelete="CASCADE"
     )
     unit: Mapped["Unit"] = relationship("Unit", backref="users")
 
@@ -249,7 +249,36 @@ class UserHasUnit(Base):
 #     def __repr__(self):
 #         return f"<Course('name={self.name}', 'id={self.id}')>"
 
-app = FastAPI(title="Lorem ipsum dolor sit amet")
+if __name__ == "__main__":
+    engine = create_engine("sqlite:///example.db")
+    print("SQLAlchemy models defined successfully. Base.metadata contains the schema.")
+
+
+# -------------------------------------------------------------------
+# Pydantic Schemas
+# -------------------------------------------------------------------
+class UserBase(BaseModel):
+    username: str
+    is_disabled: bool = False
+
+
+class UserCreate(UserBase):
+    password: str
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserRead(UserBase):
+    id: str
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+# -------------------------------------------------------------------
+# FastAPI setup
+# -------------------------------------------------------------------
+app = FastAPI(title="SQLite FastAPI Example")
+
 
 def get_db():
     db = SessionLocal()
@@ -258,25 +287,32 @@ def get_db():
     finally:
         db.close()
 
-get_db()
+
+@app.on_event("startup")
+def on_startup():
+    Base.metadata.create_all(bind=engine)
+
 
 @app.get("/")
 def root():
-    return {"message": "Lorem ipsum dolor sit amet"}
+    return {"message": "SQLite + FastAPI demo running!"}
 
-@app.get("/user/{user_id}", response_model=User)
-def get_user(user_id: int, db:Session = Depends(get_db)):  # type: ignore[reportCallInDefaultInitializer]
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found!")
-    return user
 
-@app.post("/user/", response_model=User)
-def create_user(user: User, db:Session = Depends(get_db)):  # type: ignore[reportCallInDefaultInitializer]
-    if db.query(User).filter(User.username == user.username).first()
-        raise HTTPException(status_code=404, detail="User already exists!")
+@app.post("/users/", response_model=UserRead)
+def create_user(user: UserCreate, db: Session = Depends(get_db)):  # type: ignore[reportCallInDefaultInitializer]
+    existing = db.query(User).filter(User.username == user.username).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Username already exists!")
     new_user = User(**user.model_dump())
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
     return new_user
+
+
+@app.get("/users/{user_id}", response_model=UserRead)
+def get_user(user_id: str, db: Session = Depends(get_db)):  # type: ignore[reportCallInDefaultInitializer]
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found!")
+    return user
